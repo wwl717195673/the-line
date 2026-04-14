@@ -7,9 +7,10 @@ type PersonSelectProps = {
   onChange: (value: number | undefined) => void;
   placeholder?: string;
   status?: Status;
+  disabled?: boolean;
 };
 
-function PersonSelect({ value, onChange, placeholder = "请选择人员", status = 1 }: PersonSelectProps) {
+function PersonSelect({ value, onChange, placeholder = "请选择人员", status = 1, disabled = false }: PersonSelectProps) {
   const query = useMemo(
     () => ({
       page: 1,
@@ -23,6 +24,7 @@ function PersonSelect({ value, onChange, placeholder = "请选择人员", status
   return (
     <select
       value={value ?? ""}
+      disabled={disabled}
       onChange={(event) => {
         const next = event.target.value;
         onChange(next ? Number(next) : undefined);
