@@ -21,6 +21,8 @@ func AutoMigrate(database *gorm.DB) error {
 		&model.Comment{},
 		&model.Attachment{},
 		&model.Deliverable{},
+		&model.OpenClawIntegration{},
+		&model.RegistrationCode{},
 	); err != nil {
 		return err
 	}

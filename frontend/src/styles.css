@@ -106,9 +106,9 @@ textarea {
 
 .app-header-inner {
   width: 100%;
-  max-width: 1500px;
-  margin: 0 auto;
-  padding: 20px 24px 18px;
+  max-width: none;
+  margin: 0;
+  padding: 20px clamp(24px, 3vw, 48px) 18px;
 }
 
 .app-header-top,
@@ -350,15 +350,15 @@ textarea {
 
 .app-body {
   width: 100%;
-  max-width: 1500px;
-  margin: 0 auto;
-  padding: 28px 24px 40px;
+  max-width: none;
+  margin: 0;
+  padding: 28px clamp(24px, 3vw, 48px) 40px;
 }
 
 .app-layout {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  gap: clamp(20px, 2vw, 32px);
   align-items: start;
 }
 
@@ -405,8 +405,8 @@ textarea {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(20rem, 0.92fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.45fr) minmax(24rem, 1fr);
+  gap: clamp(18px, 1.8vw, 28px);
 }
 
 .dashboard-wide,
@@ -445,13 +445,13 @@ textarea {
 }
 
 .page-card {
-  padding: 24px;
+  padding: clamp(24px, 2vw, 32px);
 }
 
 .dashboard-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(24rem, 0.9fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.08fr) minmax(28rem, 0.92fr);
+  gap: clamp(18px, 1.8vw, 28px);
   align-items: stretch;
   min-height: 20rem;
 }

@@ -6,10 +6,11 @@ import (
 )
 
 type Config struct {
-	AppPort     string
-	GinMode     string
-	MySQLDSN    string
-	AutoMigrate bool
+	AppPort      string
+	GinMode      string
+	MySQLDSN     string
+	AutoMigrate  bool
+	ExecutorMode string
 }
 
 func Load() Config {
@@ -17,7 +18,8 @@ func Load() Config {
 		AppPort:     getEnv("APP_PORT", "8080"),
 		GinMode:     getEnv("GIN_MODE", "debug"),
 		MySQLDSN:    getEnv("MYSQL_DSN", "root:root@tcp(127.0.0.1:3306)/the_line?charset=utf8mb4&parseTime=True&loc=Local"),
-		AutoMigrate: getBoolEnv("AUTO_MIGRATE", true),
+		AutoMigrate:  getBoolEnv("AUTO_MIGRATE", true),
+		ExecutorMode: getEnv("EXECUTOR_MODE", "mock"),
 	}
 }
 

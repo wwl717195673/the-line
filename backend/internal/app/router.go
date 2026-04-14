@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"the-line/backend/internal/config"
 	"the-line/backend/internal/dto"
 	"the-line/backend/internal/executor"
 	"the-line/backend/internal/handler"
@@ -12,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func NewRouter(database *gorm.DB) *gin.Engine {
+func NewRouter(cfg config.Config, database *gorm.DB) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
 
@@ -28,6 +29,8 @@ func NewRouter(database *gorm.DB) *gin.Engine {
 	attachmentRepo := repository.NewAttachmentRepository(database)
 	commentRepo := repository.NewCommentRepository(database)
 	deliverableRepo := repository.NewDeliverableRepository(database)
+	integrationRepo := repository.NewOpenClawIntegrationRepository(database)
+	regCodeRepo := repository.NewRegistrationCodeRepository(database)
 
 	personService := service.NewPersonService(personRepo)
 	agentService := service.NewAgentService(agentRepo, personRepo)
@@ -38,15 +41,28 @@ func NewRouter(database *gorm.DB) *gin.Engine {
 	agentTaskReceiptService := service.NewAgentTaskReceiptService(agentTaskReceiptRepo)
 	runNodeService := service.NewRunNodeService(database, runService, runRepo, runNodeRepo, nodeLogRepo, personRepo, agentRepo, commentRepo, attachmentRepo)
 	runOrchestrationService := service.NewRunOrchestrationService(runNodeRepo, agentTaskService)
-	mockPlannerExecutor := executor.NewMockAgentPlannerExecutor()
-	mockAgentExecutor := executor.NewMockAgentExecutor(func(ctx context.Context, taskID uint64, req *dto.AgentReceiptRequest) error {
+	integrationService := service.NewOpenClawIntegrationService(integrationRepo, regCodeRepo, agentRepo)
+
+	var plannerExec executor.AgentPlannerExecutor
+	var agentExec executor.AgentExecutor
+
+	receiptCallback := func(ctx context.Context, taskID uint64, req *dto.AgentReceiptRequest) error {
 		return agentTaskService.ProcessReceipt(ctx, taskID, *req)
-	})
-	flowDraftService.SetPlannerExecutor(mockPlannerExecutor)
+	}
+
+	if cfg.ExecutorMode == "openclaw" {
+		plannerExec = executor.NewOpenClawPlannerExecutor(integrationRepo)
+		agentExec = executor.NewOpenClawTaskExecutor(integrationRepo, "http://localhost:"+cfg.AppPort)
+	} else {
+		plannerExec = executor.NewMockAgentPlannerExecutor()
+		agentExec = executor.NewMockAgentExecutor(receiptCallback)
+	}
+
+	flowDraftService.SetPlannerExecutor(plannerExec)
 	runService.SetOrchestrationService(runOrchestrationService)
 	runNodeService.SetOrchestrationService(runOrchestrationService)
 	agentTaskService.SetOrchestrationService(runOrchestrationService)
-	agentTaskService.SetExecutor(mockAgentExecutor)
+	agentTaskService.SetExecutor(agentExec)
 	commentService := service.NewCommentService(commentRepo, runRepo, runNodeRepo, personRepo)
 	attachmentService := service.NewAttachmentService(database, attachmentRepo, commentRepo, deliverableRepo, runRepo, runNodeRepo, nodeLogRepo)
 	deliverableService := service.NewDeliverableService(database, deliverableRepo, runRepo, runNodeRepo, personRepo, agentRepo, attachmentRepo)
@@ -63,6 +79,7 @@ func NewRouter(database *gorm.DB) *gin.Engine {
 	attachmentHandler := handler.NewAttachmentHandler(attachmentService)
 	deliverableHandler := handler.NewDeliverableHandler(deliverableService)
 	activityHandler := handler.NewActivityHandler(activityService)
+	integrationHandler := handler.NewOpenClawIntegrationHandler(integrationService)
 	healthHandler := handler.NewHealthHandler(database)
 
 	router.Static("/uploads", "uploads")
@@ -160,6 +177,18 @@ func NewRouter(database *gorm.DB) *gin.Engine {
 		activities := api.Group("/activities")
 		{
 			activities.GET("/recent", activityHandler.Recent)
+		}
+
+		integrations := api.Group("/integrations/openclaw")
+		{
+			integrations.POST("/registration-codes", integrationHandler.CreateRegistrationCode)
+			integrations.GET("/registration-codes", integrationHandler.ListRegistrationCodes)
+			integrations.POST("/register", integrationHandler.Register)
+			integrations.POST("/heartbeat", integrationHandler.Heartbeat)
+			integrations.GET("", integrationHandler.List)
+			integrations.GET("/:id", integrationHandler.Detail)
+			integrations.POST("/:id/test", integrationHandler.TestPing)
+			integrations.POST("/:id/disable", integrationHandler.Disable)
 		}
 	}
 

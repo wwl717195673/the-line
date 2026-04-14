@@ -1,0 +1,9 @@
+{
+  "platform_url": "http://localhost:8080",
+  "integration_id": 3,
+  "callback_secret": "cbsec_9ab479516d9d38b9bbf34235a221f016aa4d048effa9a2d0fe69f444e143fed0",
+  "bound_agent_id": "default-agent",
+  "openclaw_api_url": "http://localhost:8081",
+  "bridge_version": "0.1.0",
+  "heartbeat_interval_seconds": 60
+}

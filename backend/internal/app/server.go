@@ -16,7 +16,7 @@ func NewServer(cfg config.Config, database *gorm.DB) *Server {
 	gin.SetMode(cfg.GinMode)
 	return &Server{
 		cfg:    cfg,
-		engine: NewRouter(database),
+		engine: NewRouter(cfg, database),
 	}
 }
 

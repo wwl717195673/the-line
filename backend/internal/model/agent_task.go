@@ -18,8 +18,11 @@ type AgentTask struct {
 	FinishedAt    *time.Time     `json:"finished_at"`
 	ErrorMessage  string         `gorm:"type:text" json:"error_message"`
 	ResultJSON    datatypes.JSON `gorm:"type:json" json:"result_json"`
-	ArtifactsJSON datatypes.JSON `gorm:"type:json" json:"artifacts_json"`
-	CreatedAt     time.Time      `json:"created_at"`
+	ArtifactsJSON      datatypes.JSON `gorm:"type:json" json:"artifacts_json"`
+	ExternalRuntime    string         `gorm:"size:50" json:"external_runtime"`
+	ExternalSessionKey string         `gorm:"size:200" json:"external_session_key"`
+	ExternalRunID      string         `gorm:"size:200" json:"external_run_id"`
+	CreatedAt          time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
