@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Local environment overrides
+.env.local
+.env.*.local
+
+# Logs and runtime files
+*.log
+*.out
+*.pid
+
+# Go build outputs
+backend/api
+
+# Frontend dependencies and build caches
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# TypeScript incremental build info
+frontend/*.tsbuildinfo
