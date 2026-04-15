@@ -34,9 +34,9 @@ func SeedTeacherClassTransferTemplate(database *gorm.DB) error {
 
 	for _, nodeConfig := range templateConfig.Nodes {
 		var node model.FlowTemplateNode
-		err := database.Where("template_id = ? AND node_code = ?", template.ID, nodeConfig.NodeCode).First(&node).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
+		queryErr := database.Where("template_id = ? AND node_code = ?", template.ID, nodeConfig.NodeCode).First(&node).Error
+		if queryErr != nil && !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+			return queryErr
 		}
 
 		defaultAgentID, err := findDefaultAgentID(database, nodeConfig.DefaultAgentCode)
@@ -57,7 +57,7 @@ func SeedTeacherClassTransferTemplate(database *gorm.DB) error {
 			ConfigJSON:       mustJSON(buildNodeConfig(nodeConfig)),
 		}
 
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(queryErr, gorm.ErrRecordNotFound) {
 			if err := database.Create(&payload).Error; err != nil {
 				return err
 			}
@@ -74,7 +74,7 @@ func SeedTeacherClassTransferTemplate(database *gorm.DB) error {
 			"output_schema_json": payload.OutputSchemaJSON,
 			"config_json":        payload.ConfigJSON,
 		}
-		if err := database.Model(&node).Updates(updates).Error; err != nil {
+		if err := database.Model(&model.FlowTemplateNode{}).Where("id = ?", node.ID).Updates(updates).Error; err != nil {
 			return err
 		}
 	}
