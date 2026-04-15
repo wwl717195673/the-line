@@ -57,6 +57,24 @@ func (r *PersonRepository) GetByID(ctx context.Context, id uint64) (*model.Perso
 	return &person, nil
 }
 
+func (r *PersonRepository) GetByEmail(ctx context.Context, email string) (*model.Person, error) {
+	var person model.Person
+	if err := r.db.WithContext(ctx).Where("email = ?", email).First(&person).Error; err != nil {
+		return nil, err
+	}
+	return &person, nil
+}
+
+func (r *PersonRepository) GetByExternalIdentity(ctx context.Context, source, externalUserID string) (*model.Person, error) {
+	var person model.Person
+	if err := r.db.WithContext(ctx).
+		Where("external_source = ? AND external_user_id = ?", source, externalUserID).
+		First(&person).Error; err != nil {
+		return nil, err
+	}
+	return &person, nil
+}
+
 func (r *PersonRepository) GetFirstEnabledByRoleWithDB(ctx context.Context, db *gorm.DB, roleType string) (*model.Person, error) {
 	var person model.Person
 	err := db.WithContext(ctx).

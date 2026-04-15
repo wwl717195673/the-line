@@ -34,6 +34,12 @@ type BridgeRegisterRequest struct {
 	InstanceFingerprint string          `json:"instance_fingerprint" binding:"required"`
 	DisplayName         string          `json:"display_name"`
 	BoundAgentID        string          `json:"bound_agent_id"`
+	AgentName           string          `json:"agent_name"`
+	AgentCode           string          `json:"agent_code"`
+	OwnerName           string          `json:"owner_name"`
+	OwnerEmail          string          `json:"owner_email"`
+	OwnerRoleType       string          `json:"owner_role_type"`
+	OwnerExternalID     string          `json:"owner_external_id"`
 	CallbackURL         string          `json:"callback_url" binding:"required"`
 	Capabilities        json.RawMessage `json:"capabilities"`
 	IdempotencyKey      string          `json:"idempotency_key"`

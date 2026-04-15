@@ -76,6 +76,9 @@ function DashboardPage() {
             <Link className="btn" to="/drafts/create">
               让龙虾生成草案
             </Link>
+            <Link className="btn" to="/integrations/openclaw/setup">
+              接入 OpenClaw
+            </Link>
             <Link className="btn" to="/runs">
               打开流程总览
             </Link>

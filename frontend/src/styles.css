@@ -1053,9 +1053,33 @@ textarea:focus,
   align-items: start;
 }
 
+.setup-page-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(20rem, 0.78fr);
+  gap: 18px;
+  align-items: start;
+}
+
 .draft-side-panel {
   position: sticky;
   top: 110px;
+}
+
+.setup-side-panel {
+  position: sticky;
+  top: 110px;
+}
+
+.setup-block {
+  display: grid;
+  gap: 14px;
+  padding: 18px 0 6px;
+  border-top: 1px solid rgba(157, 188, 219, 0.1);
+}
+
+.setup-block:first-of-type {
+  padding-top: 0;
+  border-top: none;
 }
 
 .draft-node-stack,

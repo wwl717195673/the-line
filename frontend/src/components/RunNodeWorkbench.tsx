@@ -4,7 +4,6 @@ import AttachmentUploader from "./AttachmentUploader";
 import CommentEditor from "./CommentEditor";
 import CommentList from "./CommentList";
 import NodeLogTimeline from "./NodeLogTimeline";
-import { resolveNodeFormConfig, type NodeFormField } from "./fixedNodeForms";
 import { useAgentTaskSnapshot } from "../hooks/useAgentTasks";
 import { useCollaborationActions, useComments, useAttachments } from "../hooks/useCollaboration";
 import { useRunNodeActions, useRunNodeDetail, useRunNodeLogs } from "../hooks/useRunNodes";
@@ -15,6 +14,12 @@ type RunNodeWorkbenchProps = {
   onMutated: () => Promise<void>;
 };
 
+type DeliverableMaterialItem = {
+  name: string;
+  description: string;
+  oss_url: string;
+};
+
 function readRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -22,40 +27,56 @@ function readRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function toTextValue(value: unknown): string {
+function toTextValue(value: unknown, fallback = ""): string {
+  if (typeof value === "string") {
+    return value;
+  }
   if (value === undefined || value === null) {
-    return "";
+    return fallback;
   }
   return String(value);
 }
 
-function buildPayload(values: Record<string, string>): Record<string, string> {
-  const payload: Record<string, string> = {};
-  Object.entries(values).forEach(([key, value]) => {
-    if (!value.trim()) {
-      return;
-    }
-    payload[key] = value.trim();
-  });
-  return payload;
+function toMaterialItems(value: unknown): DeliverableMaterialItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      const record = readRecord(item);
+      return {
+        name: toTextValue(record.name).trim(),
+        description: toTextValue(record.description).trim(),
+        oss_url: toTextValue(record.oss_url || record.url).trim()
+      };
+    })
+    .filter((item) => item.name || item.description || item.oss_url);
 }
 
-function validateRequired(values: Record<string, string>, fields: NodeFormField[]): string | null {
-  for (const field of fields) {
-    if (field.required && !values[field.key]?.trim()) {
-      return `${field.label}不能为空`;
-    }
-  }
-  return null;
+function lobsterStatusLabel(status: string): string {
+  return status === "done" || status === "waiting_confirm" ? "已完成" : "未完成";
 }
 
-function validateRequiredOnApprove(values: Record<string, string>, fields: NodeFormField[]): string | null {
-  for (const field of fields) {
-    if (field.requiredOnApprove && !values[field.key]?.trim()) {
-      return `${field.label}不能为空`;
-    }
+function reviewStatusLabel(status: string): string {
+  return status === "done" ? "已审核" : "未审核";
+}
+
+function normalizeMaterials(output: unknown, attachments: Array<{ file_name: string; file_type: string; file_url: string }>) {
+  const outputRecord = readRecord(output);
+  const materialRecord = readRecord(outputRecord.deliverable_materials);
+  const note = toTextValue(materialRecord.summary);
+  const files = toMaterialItems(materialRecord.files);
+  if (files.length > 0 || note.trim()) {
+    return { note, files };
   }
-  return null;
+  return {
+    note: "",
+    files: attachments.map((attachment) => ({
+      name: attachment.file_name,
+      description: attachment.file_type,
+      oss_url: attachment.file_url
+    }))
+  };
 }
 
 function formatJSON(value: unknown): string {
@@ -92,43 +113,34 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
   const agentSnapshot = useAgentTaskSnapshot(nodeID, !!nodeID);
   const actions = useRunNodeActions();
   const collaborationActions = useCollaborationActions();
-  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [matter, setMatter] = useState("");
+  const [deliverableNote, setDeliverableNote] = useState("");
+  const [deliverableItems, setDeliverableItems] = useState<DeliverableMaterialItem[]>([]);
   const [actionError, setActionError] = useState("");
 
-  const formConfig = useMemo(() => {
-    if (!data) {
-      return null;
-    }
-    return resolveNodeFormConfig(data.node_code, data.node_type);
-  }, [data]);
-
   useEffect(() => {
-    if (!data || !formConfig) {
-      setFormValues({});
+    if (!data) {
+      setMatter("");
+      setDeliverableNote("");
+      setDeliverableItems([]);
       setActionError("");
       return;
     }
     const inputRecord = readRecord(data.input_json);
     const outputRecord = readRecord(data.output_json);
-    const nextValues: Record<string, string> = {};
-    formConfig.fields.forEach((field) => {
-      const inputValue = inputRecord[field.key];
-      const outputValue = outputRecord[field.key];
-      nextValues[field.key] = toTextValue(inputValue ?? outputValue);
-    });
-    setFormValues(nextValues);
+    const materials = normalizeMaterials(outputRecord, attachmentsQuery.data);
+    setMatter(toTextValue(inputRecord.matter || outputRecord.summary, data.node_name));
+    setDeliverableNote(materials.note);
+    setDeliverableItems(materials.files);
     setActionError("");
-  }, [data, formConfig]);
+  }, [attachmentsQuery.data, data]);
 
   const readonly = runStatus === "cancelled";
   const can = useMemo(() => {
     const set = new Set(data?.available_actions ?? []);
     return {
       saveInput: set.has("save_input"),
-      submit: set.has("submit"),
       approve: set.has("approve"),
-      reject: set.has("reject"),
-      requestMaterial: set.has("request_material"),
       complete: set.has("complete"),
       fail: set.has("fail"),
       runAgent: set.has("run_agent"),
@@ -138,7 +150,7 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
   }, [data?.available_actions]);
 
   const isCurrentNode = !!data?.is_current && data?.status !== "done";
-  const shouldPollAgentState = !!data?.bound_agent_id && isCurrentNode && ["running", "wait_confirm", "blocked", "failed"].includes(data.status);
+  const shouldPollAgentState = !!data?.bound_agent_id && isCurrentNode && ["running", "waiting_confirm", "blocked", "failed"].includes(data.status);
 
   useEffect(() => {
     if (!shouldPollAgentState) {
@@ -166,27 +178,16 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
     }
   };
 
-  const validateCompleteOrSubmit = (): void => {
-    if (!formConfig) {
-      return;
+  const buildNodeOutput = () => ({
+    summary: matter.trim() || data?.node_name || "",
+    deliverable_materials: {
+      summary: deliverableNote.trim(),
+      files: deliverableItems.filter((item) => item.name.trim() || item.description.trim() || item.oss_url.trim())
     }
-    const requiredError = validateRequired(formValues, formConfig.fields);
-    if (requiredError) {
-      throw new Error(requiredError);
-    }
-    if (formConfig.requiresAttachmentOnComplete && attachmentsQuery.data.length < 1) {
-      throw new Error("当前节点至少需要上传 1 份附件");
-    }
-  };
+  });
 
-  const validateApprove = (): void => {
-    if (!formConfig) {
-      return;
-    }
-    const requiredApproveError = validateRequiredOnApprove(formValues, formConfig.fields);
-    if (requiredApproveError) {
-      throw new Error(requiredApproveError);
-    }
+  const updateMaterialItem = (index: number, key: keyof DeliverableMaterialItem, value: string) => {
+    setDeliverableItems((prev) => prev.map((item, currentIndex) => (currentIndex === index ? { ...item, [key]: value } : item)));
   };
 
   const handleSave = (): Promise<void> =>
@@ -194,16 +195,7 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
       if (!data) {
         return;
       }
-      await actions.saveInput(data.id, buildPayload(formValues));
-    });
-
-  const handleSubmit = (): Promise<void> =>
-    exec(async () => {
-      if (!data) {
-        return;
-      }
-      validateCompleteOrSubmit();
-      await actions.submit(data.id, formValues.review_comment?.trim() ?? "");
+      await actions.saveInput(data.id, { matter: matter.trim() });
     });
 
   const handleComplete = (): Promise<void> =>
@@ -211,9 +203,8 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
       if (!data) {
         return;
       }
-      validateCompleteOrSubmit();
       await actions.complete(data.id, {
-        output_json: buildPayload(formValues)
+        output_json: buildNodeOutput()
       });
     });
 
@@ -222,36 +213,10 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
       if (!data) {
         return;
       }
-      validateApprove();
       await actions.approve(data.id, {
-        review_comment: formValues.review_comment?.trim() || undefined,
-        final_plan: formValues.final_plan?.trim() || undefined,
-        output_json: buildPayload(formValues)
+        review_comment: "已审核",
+        output_json: buildNodeOutput()
       });
-    });
-
-  const handleReject = (): Promise<void> =>
-    exec(async () => {
-      if (!data) {
-        return;
-      }
-      const reason = window.prompt("请输入驳回原因", "") ?? "";
-      if (!reason.trim()) {
-        throw new Error("驳回原因不能为空");
-      }
-      await actions.reject(data.id, reason.trim());
-    });
-
-  const handleRequestMaterial = (): Promise<void> =>
-    exec(async () => {
-      if (!data) {
-        return;
-      }
-      const requirement = window.prompt("请输入补充材料要求", "") ?? "";
-      if (!requirement.trim()) {
-        throw new Error("补充材料要求不能为空");
-      }
-      await actions.requestMaterial(data.id, requirement.trim());
     });
 
   const handleFail = (): Promise<void> =>
@@ -279,7 +244,7 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
       if (!data) {
         return;
       }
-      const comment = window.prompt(action === "confirm" ? "请输入确认说明（可选）" : "请输入驳回说明", "") ?? "";
+      const comment = window.prompt(action === "confirm" ? "请输入审核说明（可选）" : "请输入驳回说明", "") ?? "";
       if (action === "reject" && !comment.trim()) {
         throw new Error("驳回龙虾结果时必须填写说明");
       }
@@ -294,23 +259,11 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
       if (!data) {
         return;
       }
-      const comment = window.prompt(
-        action === "retry" ? "请输入重试说明（可选）" : "请输入人工接管说明，并在下一步补充结果 JSON",
-        ""
-      ) ?? "";
-      let manualResult: Record<string, unknown> | undefined;
-      if (action === "complete") {
-        const raw = window.prompt("请输入人工结果 JSON", "{}") ?? "{}";
-        try {
-          manualResult = readRecord(JSON.parse(raw));
-        } catch {
-          throw new Error("人工结果 JSON 不合法");
-        }
-      }
+      const comment = window.prompt(action === "retry" ? "请输入重试说明（可选）" : "请输入人工接管说明", "") ?? "";
       await actions.takeover(data.id, {
         action,
         comment: comment.trim() || undefined,
-        manual_result: manualResult
+        manual_result: action === "complete" ? buildNodeOutput() : undefined
       });
     });
 
@@ -326,74 +279,114 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
       {actionError ? <p className="error-text">{actionError}</p> : null}
       {data ? (
         <>
-          <p>
-            <b>节点：</b>
-            {data.node_name}（{data.node_code}）
-          </p>
-          <p>
-            <b>状态：</b>
-            {data.status}
-          </p>
-          <p>
-            <b>执行主体：</b>
-            {data.bound_agent?.name ?? "人工节点"}
-          </p>
-          <p>
-            <b>结果责任人：</b>
-            {data.result_owner_person?.name ?? "-"}
-          </p>
-          <p>
-            <b>表单渲染：</b>
-            {formConfig?.source === "fixed" ? "固定节点表单" : "节点类型默认表单"}
-          </p>
-          {formConfig ? (
-            <>
-              <p className="muted">{formConfig.title}</p>
-              <p className="muted">{formConfig.description}</p>
-            </>
-          ) : null}
-          <p>
-            <b>可执行动作：</b>
-            {(data.available_actions || []).join(", ") || "无"}
-          </p>
+          <div className="node-summary-card">
+            <p>
+              <b>哪个龙虾：</b>
+              {data.bound_agent?.name ?? "未指定"}
+            </p>
+            <p>
+              <b>哪个人：</b>
+              {data.owner_person?.name ?? data.result_owner_person?.name ?? "-"}
+            </p>
+            <p>
+              <b>龙虾状态：</b>
+              {lobsterStatusLabel(data.status)}
+            </p>
+            <p>
+              <b>审核状态：</b>
+              {reviewStatusLabel(data.status)}
+            </p>
+          </div>
 
-          {formConfig ? (
-            <div className="node-form-grid">
-              {formConfig.fields.map((field) => (
-                <label className="full-width" key={field.key}>
-                  {field.label}
-                  {field.required ? " *" : ""}
-                  {field.requiredOnApprove ? "（审核通过时必填）" : ""}
-                  {field.multiline ? (
-                    <textarea
-                      rows={4}
-                      value={formValues[field.key] ?? ""}
-                      onChange={(event) =>
-                        setFormValues((prev) => ({
-                          ...prev,
-                          [field.key]: event.target.value
-                        }))
-                      }
-                      placeholder={field.placeholder}
-                      disabled={readonly || !isCurrentNode}
-                    />
-                  ) : (
-                    <input
-                      value={formValues[field.key] ?? ""}
-                      onChange={(event) =>
-                        setFormValues((prev) => ({
-                          ...prev,
-                          [field.key]: event.target.value
-                        }))
-                      }
-                      placeholder={field.placeholder}
-                      disabled={readonly || !isCurrentNode}
-                    />
-                  )}
-                </label>
-              ))}
+          <div className="node-form-grid">
+            <label className="full-width">
+              事项
+              <input
+                value={matter}
+                onChange={(event) => setMatter(event.target.value)}
+                disabled={readonly || !isCurrentNode}
+                placeholder="1 句话解释当前节点完成了什么事"
+              />
+            </label>
+
+            <label className="full-width">
+              交付物料说明
+              <textarea
+                rows={3}
+                value={deliverableNote}
+                onChange={(event) => setDeliverableNote(event.target.value)}
+                disabled={readonly || !isCurrentNode}
+                placeholder="说明这组文件分别是什么，给下游怎么使用"
+              />
+            </label>
+          </div>
+
+          <div className="node-summary-card">
+            <div className="page-title">
+              <div>
+                <span className="section-kicker">deliverables</span>
+                <h4>交付物料</h4>
+              </div>
+              {!readonly && isCurrentNode ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setDeliverableItems((prev) => [...prev, { name: "", description: "", oss_url: "" }])}
+                >
+                  新增文件
+                </button>
+              ) : null}
             </div>
-          ) : null}
+
+            {deliverableItems.length ? (
+              <div className="node-form-grid">
+                {deliverableItems.map((item, index) => (
+                  <div className="full-width node-summary-card" key={`${index}-${item.oss_url}`}>
+                    <label>
+                      文件名
+                      <input
+                        value={item.name}
+                        onChange={(event) => updateMaterialItem(index, "name", event.target.value)}
+                        disabled={readonly || !isCurrentNode}
+                        placeholder="例如：甩班名单.xlsx"
+                      />
+                    </label>
+                    <label>
+                      文件说明
+                      <input
+                        value={item.description}
+                        onChange={(event) => updateMaterialItem(index, "description", event.target.value)}
+                        disabled={readonly || !isCurrentNode}
+                        placeholder="说明这个文件是什么"
+                      />
+                    </label>
+                    <label className="full-width">
+                      OSS URL
+                      <input
+                        value={item.oss_url}
+                        onChange={(event) => updateMaterialItem(index, "oss_url", event.target.value)}
+                        disabled={readonly || !isCurrentNode}
+                        placeholder="https://oss.example.com/path/file.pdf"
+                      />
+                    </label>
+                    {!readonly && isCurrentNode ? (
+                      <div className="toolbar">
+                        <button
+                          type="button"
+                          className="btn danger"
+                          onClick={() => setDeliverableItems((prev) => prev.filter((_, currentIndex) => currentIndex !== index))}
+                        >
+                          删除文件
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">还没有交付物料，可以直接补 OSS URL 列表，或继续使用下方附件区上传/挂载文件。</p>
+            )}
+          </div>
 
           {data.run ? (
             <div className="node-summary-card">
@@ -402,15 +395,12 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
                 {data.run.title}
               </p>
               <p>
-                <b>流程当前状态：</b>
+                <b>流程状态：</b>
                 {data.run.current_status}
               </p>
-              <p>
-                <b>上游申请摘要：</b>
-              </p>
-              <pre>{JSON.stringify(data.run.input_payload_json ?? {}, null, 2)}</pre>
             </div>
           ) : null}
+
           {agentSnapshot.task ? (
             <div className="node-summary-card agent-task-card">
               <div className="page-title">
@@ -467,12 +457,6 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
                     <b>最新回执：</b>
                     {agentSnapshot.receipt.receipt_status} / {new Date(agentSnapshot.receipt.received_at).toLocaleString()}
                   </p>
-                  {Array.isArray(agentSnapshot.receipt.payload_json.logs) && agentSnapshot.receipt.payload_json.logs.length ? (
-                    <details>
-                      <summary>执行日志</summary>
-                      <pre>{formatJSON(agentSnapshot.receipt.payload_json.logs)}</pre>
-                    </details>
-                  ) : null}
                   <details>
                     <summary>结果 JSON</summary>
                     <pre>{formatJSON(agentSnapshot.task.result_json)}</pre>
@@ -481,7 +465,6 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
               ) : null}
             </div>
           ) : null}
-          {formConfig?.requiresAttachmentOnComplete ? <p className="node-form-hint">本节点标记完成前至少上传 1 份触达凭证附件。</p> : null}
 
           <div className="action-grid">
             <button
@@ -490,55 +473,7 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
               disabled={!can.saveInput || readonly || actions.loading || !isCurrentNode}
               onClick={() => void handleSave()}
             >
-              暂存
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={!can.submit || readonly || actions.loading || !isCurrentNode}
-              onClick={() => void handleSubmit()}
-            >
-              提交确认
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!can.complete || readonly || actions.loading || !isCurrentNode}
-              onClick={() => void handleComplete()}
-            >
-              标记完成
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!can.approve || readonly || actions.loading || !isCurrentNode}
-              onClick={() => void handleApprove()}
-            >
-              审核通过
-            </button>
-            <button
-              type="button"
-              className="btn danger"
-              disabled={!can.reject || readonly || actions.loading || !isCurrentNode}
-              onClick={() => void handleReject()}
-            >
-              驳回
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={!can.requestMaterial || readonly || actions.loading || !isCurrentNode}
-              onClick={() => void handleRequestMaterial()}
-            >
-              要求补材料
-            </button>
-            <button
-              type="button"
-              className="btn danger"
-              disabled={!can.fail || readonly || actions.loading || !isCurrentNode}
-              onClick={() => void handleFail()}
-            >
-              标记异常
+              保存事项
             </button>
             <button
               type="button"
@@ -546,7 +481,23 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
               disabled={!can.runAgent || readonly || actions.loading || !isCurrentNode}
               onClick={() => void handleRunAgent()}
             >
-              运行龙虾
+              让龙虾执行
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!can.complete || readonly || actions.loading || !isCurrentNode}
+              onClick={() => void handleComplete()}
+            >
+              标记已完成
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!can.approve || readonly || actions.loading || !isCurrentNode}
+              onClick={() => void handleApprove()}
+            >
+              标记已审核
             </button>
             <button
               type="button"
@@ -554,7 +505,7 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
               disabled={!can.confirmAgentResult || readonly || actions.loading || !isCurrentNode}
               onClick={() => void handleConfirmAgentResult("confirm")}
             >
-              确认龙虾结果
+              标记已审核
             </button>
             <button
               type="button"
@@ -562,7 +513,7 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
               disabled={!can.confirmAgentResult || readonly || actions.loading || !isCurrentNode}
               onClick={() => void handleConfirmAgentResult("reject")}
             >
-              驳回龙虾结果
+              驳回结果
             </button>
             <button
               type="button"
@@ -574,11 +525,19 @@ function RunNodeWorkbench({ nodeID, runStatus, onMutated }: RunNodeWorkbenchProp
             </button>
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn"
               disabled={!can.takeover || readonly || actions.loading || !isCurrentNode}
               onClick={() => void handleTakeover("complete")}
             >
-              人工接管完成
+              人工补完成
+            </button>
+            <button
+              type="button"
+              className="btn danger"
+              disabled={!can.fail || readonly || actions.loading || !isCurrentNode}
+              onClick={() => void handleFail()}
+            >
+              标记异常
             </button>
           </div>
 

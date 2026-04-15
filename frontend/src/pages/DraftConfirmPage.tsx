@@ -25,90 +25,51 @@ function slugify(value: string): string {
 function createEmptyNode(sortOrder: number): DraftNode {
   return {
     node_code: `step_${sortOrder}`,
-    node_name: `新节点 ${sortOrder}`,
+    node_name: `事项 ${sortOrder}`,
     node_type: "human_review",
     sort_order: sortOrder,
     executor_type: "human",
-    owner_rule: "initiator",
-    result_owner_rule: "initiator",
+    owner_rule: "specified_person",
+    result_owner_rule: "specified_person",
     input_schema: {},
     output_schema: {},
-    completion_condition: "",
+    completion_condition: `事项 ${sortOrder}`,
     failure_condition: "",
     escalation_rule: ""
   };
 }
 
-function isAgentNodeType(nodeType: string): boolean {
-  return nodeType === "agent_execute" || nodeType === "agent_export";
+function deriveMatter(node: DraftNode, index: number): string {
+  return node.completion_condition?.trim() || node.node_name?.trim() || `事项 ${index + 1}`;
 }
 
 function normalizeNode(node: DraftNode, index: number): DraftNode {
-  const nextNodeType = isAgentNodeType(node.node_type) ? node.node_type : node.executor_type === "agent" ? "agent_execute" : node.node_type;
+  const matter = deriveMatter(node, index);
+  const hasAgent = !!node.executor_agent_code?.trim();
   return {
     ...node,
-    node_code: slugify(node.node_code || node.node_name || `step_${index + 1}`),
+    node_code: slugify(node.node_code || matter || `step_${index + 1}`),
+    node_name: matter,
     sort_order: index + 1,
-    node_type: nextNodeType,
-    executor_type: isAgentNodeType(nextNodeType) ? "agent" : "human",
-    task_type: isAgentNodeType(nextNodeType) ? node.task_type || (nextNodeType === "agent_export" ? "export" : "query") : "",
-    executor_agent_code: isAgentNodeType(nextNodeType) ? node.executor_agent_code || "" : "",
-    owner_person_id: node.owner_rule === "specified_person" ? node.owner_person_id : undefined,
-    result_owner_person_id: node.result_owner_rule === "specified_person" ? node.result_owner_person_id : undefined
+    node_type: hasAgent ? "agent_execute" : "human_review",
+    executor_type: hasAgent ? "agent" : "human",
+    task_type: hasAgent ? node.task_type || "query" : "",
+    owner_rule: "specified_person",
+    result_owner_rule: "specified_person",
+    owner_person_id: node.owner_person_id,
+    result_owner_person_id: node.owner_person_id,
+    completion_condition: matter
   };
-}
-
-function getNodeTypeLabel(nodeType: string): string {
-  switch (nodeType) {
-    case "human_input":
-      return "人工录入";
-    case "human_review":
-      return "人工审核";
-    case "agent_execute":
-      return "龙虾执行";
-    case "agent_export":
-      return "龙虾导出";
-    case "human_acceptance":
-      return "最终签收";
-    default:
-      return nodeType;
-  }
 }
 
 function getNodeAccent(nodeType: string): string {
   switch (nodeType) {
-    case "human_input":
-      return "cyan";
     case "human_review":
       return "amber";
     case "agent_execute":
       return "blue";
-    case "agent_export":
-      return "emerald";
-    case "human_acceptance":
-      return "rose";
     default:
       return "slate";
-  }
-}
-
-function summarizeOwner(rule: string, personID?: number): string {
-  if (rule === "specified_person" && personID) {
-    return `指定人员 #${personID}`;
-  }
-  switch (rule) {
-    case "initiator":
-      return "发起人";
-    case "middle_office":
-      return "中台角色";
-    case "operation":
-      return "运营角色";
-    case "current_owner":
-      return "沿用当前责任人";
-    case "node_owner":
-      return "节点执行责任人";
-    default:
-      return rule || "-";
   }
 }
 
@@ -391,17 +352,17 @@ function DraftConfirmPage() {
                               onClick={() => setSelectedNodeIndex(index)}
                             >
                               <span className="draft-flow-node-index">{String(index + 1).padStart(2, "0")}</span>
-                              <span className="draft-flow-node-type">{getNodeTypeLabel(normalized.node_type)}</span>
-                              <strong>{normalized.node_name}</strong>
-                              <p>{normalized.completion_condition || "未填写完成条件，建议补充节点通过标准。"}</p>
+                              <span className="draft-flow-node-type">{normalized.executor_agent_code ? "龙虾执行" : "人工担责"}</span>
+                              <strong>{deriveMatter(normalized, index)}</strong>
+                              <p>{normalized.executor_agent_code ? `龙虾：${normalized.executor_agent_code}` : "未指定龙虾，默认由人处理"}</p>
                               <dl>
                                 <div>
-                                  <dt>执行</dt>
-                                  <dd>{normalized.executor_type === "agent" ? normalized.executor_agent_code || "待绑定龙虾" : summarizeOwner(normalized.owner_rule, normalized.owner_person_id)}</dd>
+                                  <dt>哪个人</dt>
+                                  <dd>{normalized.owner_person_id ? `#${normalized.owner_person_id}` : "待指定"}</dd>
                                 </div>
                                 <div>
-                                  <dt>结果</dt>
-                                  <dd>{summarizeOwner(normalized.result_owner_rule, normalized.result_owner_person_id)}</dd>
+                                  <dt>哪个龙虾</dt>
+                                  <dd>{normalized.executor_agent_code || "未指定"}</dd>
                                 </div>
                               </dl>
                             </button>
@@ -437,7 +398,7 @@ function DraftConfirmPage() {
                   </div>
                   {normalizedSelectedNode ? (
                     <span className={`pill draft-node-pill-${getNodeAccent(normalizedSelectedNode.node_type)}`}>
-                      {getNodeTypeLabel(normalizedSelectedNode.node_type)}
+                      {normalizedSelectedNode.executor_agent_code ? "龙虾节点" : "人工节点"}
                     </span>
                   ) : null}
                 </div>
@@ -458,179 +419,56 @@ function DraftConfirmPage() {
 
                     <div className="form-grid draft-inspector-form">
                       <label className="full-width">
-                        节点名称 *
+                        事项 *
                         <input
-                          value={selectedNode.node_name}
-                          onChange={(event) => updateNode(selectedNodeIndex, (item) => ({ ...item, node_name: event.target.value }))}
-                          disabled={!canEdit}
-                        />
-                      </label>
-                      <label>
-                        节点编码 *
-                        <input
-                          value={selectedNode.node_code}
-                          onChange={(event) => updateNode(selectedNodeIndex, (item) => ({ ...item, node_code: slugify(event.target.value) }))}
-                          disabled={!canEdit}
-                        />
-                      </label>
-                      <label>
-                        节点类型 *
-                        <select
-                          value={normalizedSelectedNode.node_type}
-                          onChange={(event) =>
-                            updateNode(selectedNodeIndex, (item) => {
-                              const nextNodeType = event.target.value;
-                              return {
-                                ...item,
-                                node_type: nextNodeType,
-                                executor_type: isAgentNodeType(nextNodeType) ? "agent" : "human",
-                                task_type: isAgentNodeType(nextNodeType)
-                                  ? item.task_type || (nextNodeType === "agent_export" ? "export" : "query")
-                                  : ""
-                              };
-                            })
-                          }
-                          disabled={!canEdit}
-                        >
-                          <option value="human_input">人工录入</option>
-                          <option value="human_review">人工审核</option>
-                          <option value="agent_execute">龙虾执行</option>
-                          <option value="agent_export">龙虾导出</option>
-                          <option value="human_acceptance">最终签收</option>
-                        </select>
-                      </label>
-                      <label>
-                        执行主体 *
-                        <select
-                          value={normalizedSelectedNode.executor_type}
-                          onChange={(event) =>
-                            updateNode(selectedNodeIndex, (item) => {
-                              const nextExecutorType = event.target.value as DraftNode["executor_type"];
-                              return {
-                                ...item,
-                                executor_type: nextExecutorType,
-                                node_type:
-                                  nextExecutorType === "agent"
-                                    ? item.node_type === "agent_export"
-                                      ? "agent_export"
-                                      : "agent_execute"
-                                    : item.node_type === "human_acceptance"
-                                      ? "human_acceptance"
-                                      : item.node_type === "human_input"
-                                        ? "human_input"
-                                        : "human_review"
-                              };
-                            })
-                          }
-                          disabled={!canEdit}
-                        >
-                          <option value="human">人</option>
-                          <option value="agent">龙虾</option>
-                        </select>
-                      </label>
-
-                      <label>
-                        执行责任规则 *
-                        <select
-                          value={selectedNode.owner_rule}
-                          onChange={(event) => updateNode(selectedNodeIndex, (item) => ({ ...item, owner_rule: event.target.value }))}
-                          disabled={!canEdit}
-                        >
-                          <option value="initiator">发起人</option>
-                          <option value="specified_person">指定人员</option>
-                          <option value="middle_office">中台角色</option>
-                          <option value="operation">运营角色</option>
-                          <option value="current_owner">沿用当前责任人</option>
-                        </select>
-                      </label>
-                      <label>
-                        执行责任人
-                        <PersonSelect
-                          value={selectedNode.owner_person_id}
-                          onChange={(value) => updateNode(selectedNodeIndex, (item) => ({ ...item, owner_person_id: value }))}
-                          disabled={!canEdit}
-                        />
-                      </label>
-
-                      <label>
-                        结果责任规则 *
-                        <select
-                          value={selectedNode.result_owner_rule}
-                          onChange={(event) => updateNode(selectedNodeIndex, (item) => ({ ...item, result_owner_rule: event.target.value }))}
-                          disabled={!canEdit}
-                        >
-                          <option value="initiator">发起人</option>
-                          <option value="specified_person">指定人员</option>
-                          <option value="node_owner">节点执行责任人</option>
-                          <option value="middle_office">中台角色</option>
-                          <option value="operation">运营角色</option>
-                          <option value="current_owner">沿用当前责任人</option>
-                        </select>
-                      </label>
-                      <label>
-                        结果责任人
-                        <PersonSelect
-                          value={selectedNode.result_owner_person_id}
-                          onChange={(value) => updateNode(selectedNodeIndex, (item) => ({ ...item, result_owner_person_id: value }))}
-                          disabled={!canEdit}
-                        />
-                      </label>
-
-                      {normalizedSelectedNode.executor_type === "agent" ? (
-                        <>
-                          <label>
-                            执行龙虾 *
-                            <select
-                              value={selectedNode.executor_agent_code ?? ""}
-                              onChange={(event) => updateNode(selectedNodeIndex, (item) => ({ ...item, executor_agent_code: event.target.value }))}
-                              disabled={!canEdit}
-                            >
-                              <option value="">{agents.loading ? "加载中..." : "请选择执行龙虾"}</option>
-                              {(agents.data?.items ?? []).map((agent) => (
-                                <option key={agent.id} value={agent.code}>
-                                  {agent.name}（{agent.code}）
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label>
-                            task_type *
-                            <select
-                              value={selectedNode.task_type || "query"}
-                              onChange={(event) => updateNode(selectedNodeIndex, (item) => ({ ...item, task_type: event.target.value }))}
-                              disabled={!canEdit}
-                            >
-                              <option value="query">query</option>
-                              <option value="batch_operation">batch_operation</option>
-                              <option value="export">export</option>
-                            </select>
-                          </label>
-                        </>
-                      ) : null}
-
-                      <label className="full-width">
-                        完成条件
-                        <textarea
-                          rows={3}
-                          value={selectedNode.completion_condition ?? ""}
-                          onChange={(event) => updateNode(selectedNodeIndex, (item) => ({ ...item, completion_condition: event.target.value }))}
-                          disabled={!canEdit}
-                        />
-                      </label>
-                      <label className="full-width">
-                        失败条件 / 升级说明
-                        <textarea
-                          rows={3}
-                          value={[selectedNode.failure_condition ?? "", selectedNode.escalation_rule ?? ""].filter(Boolean).join("\n")}
+                          value={deriveMatter(selectedNode, selectedNodeIndex)}
                           onChange={(event) =>
                             updateNode(selectedNodeIndex, (item) => ({
                               ...item,
-                              failure_condition: event.target.value.trim(),
-                              escalation_rule: event.target.value.trim()
+                              node_name: event.target.value,
+                              completion_condition: event.target.value
+                            }))
+                          }
+                          disabled={!canEdit}
+                          placeholder="1 句话说明这个节点完成什么事"
+                        />
+                      </label>
+                      <label>
+                        哪个人 *
+                        <PersonSelect
+                          value={selectedNode.owner_person_id}
+                          onChange={(value) =>
+                            updateNode(selectedNodeIndex, (item) => ({
+                              ...item,
+                              owner_person_id: value,
+                              result_owner_person_id: value
                             }))
                           }
                           disabled={!canEdit}
                         />
+                      </label>
+                      <label>
+                        哪个龙虾
+                        <select
+                          value={selectedNode.executor_agent_code ?? ""}
+                          onChange={(event) =>
+                            updateNode(selectedNodeIndex, (item) => ({
+                              ...item,
+                              executor_agent_code: event.target.value,
+                              executor_type: event.target.value ? "agent" : "human",
+                              node_type: event.target.value ? "agent_execute" : "human_review",
+                              task_type: event.target.value ? "query" : ""
+                            }))
+                          }
+                          disabled={!canEdit}
+                        >
+                          <option value="">{agents.loading ? "加载中..." : "不指定龙虾"}</option>
+                          {(agents.data?.items ?? []).map((agent) => (
+                            <option key={agent.id} value={agent.code}>
+                              {agent.name}（{agent.code}）
+                            </option>
+                          ))}
+                        </select>
                       </label>
                     </div>
 

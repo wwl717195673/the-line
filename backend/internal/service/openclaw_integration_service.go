@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 )
 
 type OpenClawIntegrationService struct {
+	db              *gorm.DB
 	integrationRepo *repository.OpenClawIntegrationRepository
 	regCodeRepo     *repository.RegistrationCodeRepository
 	agentRepo       *repository.AgentRepository
@@ -30,12 +32,14 @@ type OpenClawIntegrationService struct {
 }
 
 func NewOpenClawIntegrationService(
+	db *gorm.DB,
 	integrationRepo *repository.OpenClawIntegrationRepository,
 	regCodeRepo *repository.RegistrationCodeRepository,
 	agentRepo *repository.AgentRepository,
 	agentTaskRepo *repository.AgentTaskRepository,
 ) *OpenClawIntegrationService {
 	return &OpenClawIntegrationService{
+		db:              db,
 		integrationRepo: integrationRepo,
 		regCodeRepo:     regCodeRepo,
 		agentRepo:       agentRepo,
@@ -89,16 +93,20 @@ func (s *OpenClawIntegrationService) Register(ctx context.Context, req dto.Bridg
 		return dto.BridgeRegisterResponse{}, response.Validation("不支持的协议版本")
 	}
 
+	if strings.TrimSpace(req.InstanceFingerprint) == "" {
+		return dto.BridgeRegisterResponse{}, response.Validation("实例指纹不能为空")
+	}
+	if strings.TrimSpace(req.CallbackURL) == "" {
+		return dto.BridgeRegisterResponse{}, response.Validation("回调地址不能为空")
+	}
+
 	// Check if already registered (idempotent)
 	existing, err := s.integrationRepo.GetByFingerprint(ctx, req.InstanceFingerprint)
 	if err == nil && existing != nil {
-		return dto.BridgeRegisterResponse{
-			IntegrationID:             existing.ID,
-			Status:                    existing.Status,
-			CallbackSecret:            existing.CallbackSecret,
-			HeartbeatIntervalSeconds:  existing.HeartbeatInterval,
-			MinSupportedBridgeVersion: "0.1.0",
-		}, nil
+		return s.registerWithExistingIntegration(ctx, existing, req)
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return dto.BridgeRegisterResponse{}, err
 	}
 
 	// Validate registration code
@@ -116,60 +124,64 @@ func (s *OpenClawIntegrationService) Register(ctx context.Context, req dto.Bridg
 		return dto.BridgeRegisterResponse{}, response.Validation("注册码已过期")
 	}
 
-	// Generate callback secret
-	secret := generateSecret()
-
-	// Resolve bound agent ID
-	var boundAgentID uint64
-	if req.BoundAgentID != "" {
-		agent, err := s.agentRepo.GetByCode(ctx, req.BoundAgentID)
+	var result dto.BridgeRegisterResponse
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		person, err := s.resolveOrCreateOwner(ctx, tx, req)
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return dto.BridgeRegisterResponse{}, response.Validation("绑定的龙虾编码不存在")
-			}
-			return dto.BridgeRegisterResponse{}, err
+			return err
 		}
-		boundAgentID = agent.ID
-	}
 
-	displayName := strings.TrimSpace(req.DisplayName)
-	if displayName == "" {
-		displayName = "OpenClaw Instance"
-	}
+		agent, err := s.resolveOrCreateAgent(ctx, tx, req, person)
+		if err != nil {
+			return err
+		}
 
-	capJSON := datatypes.JSON([]byte("{}"))
-	if len(req.Capabilities) > 0 {
-		capJSON = datatypes.JSON(req.Capabilities)
-	}
+		displayName := strings.TrimSpace(req.DisplayName)
+		if displayName == "" {
+			displayName = "OpenClaw Instance"
+		}
 
-	integration := &model.OpenClawIntegration{
-		DisplayName:         displayName,
-		Status:              domain.IntegrationStatusActive,
-		BridgeVersion:       req.BridgeVersion,
-		OpenClawVersion:     req.OpenClawVersion,
-		InstanceFingerprint: req.InstanceFingerprint,
-		BoundAgentID:        boundAgentID,
-		CapabilitiesJSON:    capJSON,
-		CallbackURL:         strings.TrimRight(req.CallbackURL, "/"),
-		CallbackSecret:      secret,
-		HeartbeatInterval:   60,
-	}
-	if err := s.integrationRepo.Create(ctx, integration); err != nil {
+		capJSON := datatypes.JSON([]byte("{}"))
+		if len(req.Capabilities) > 0 {
+			capJSON = datatypes.JSON(req.Capabilities)
+		}
+
+		integration := &model.OpenClawIntegration{
+			DisplayName:         displayName,
+			Status:              domain.IntegrationStatusActive,
+			BridgeVersion:       strings.TrimSpace(req.BridgeVersion),
+			OpenClawVersion:     strings.TrimSpace(req.OpenClawVersion),
+			InstanceFingerprint: strings.TrimSpace(req.InstanceFingerprint),
+			BoundAgentID:        agent.ID,
+			CapabilitiesJSON:    capJSON,
+			CallbackURL:         strings.TrimRight(strings.TrimSpace(req.CallbackURL), "/"),
+			CallbackSecret:      generateSecret(),
+			HeartbeatInterval:   60,
+		}
+		if err := tx.Create(integration).Error; err != nil {
+			return err
+		}
+
+		regCode.Status = domain.RegCodeStatusUsed
+		regCode.IntegrationID = &integration.ID
+		if err := tx.Save(regCode).Error; err != nil {
+			return err
+		}
+
+		result = dto.BridgeRegisterResponse{
+			IntegrationID:             integration.ID,
+			Status:                    integration.Status,
+			CallbackSecret:            integration.CallbackSecret,
+			HeartbeatIntervalSeconds:  integration.HeartbeatInterval,
+			MinSupportedBridgeVersion: "0.1.0",
+		}
+		return nil
+	})
+	if err != nil {
 		return dto.BridgeRegisterResponse{}, err
 	}
 
-	// Mark registration code as used
-	regCode.Status = domain.RegCodeStatusUsed
-	regCode.IntegrationID = &integration.ID
-	_ = s.regCodeRepo.Update(ctx, regCode)
-
-	return dto.BridgeRegisterResponse{
-		IntegrationID:             integration.ID,
-		Status:                    integration.Status,
-		CallbackSecret:            secret,
-		HeartbeatIntervalSeconds:  integration.HeartbeatInterval,
-		MinSupportedBridgeVersion: "0.1.0",
-	}, nil
+	return result, nil
 }
 
 // --- Heartbeat ---
@@ -317,15 +329,15 @@ func (s *OpenClawIntegrationService) PendingTasks(ctx context.Context, integrati
 	for _, t := range tasks {
 		if t.AgentID == integration.BoundAgentID {
 			result = append(result, dto.AgentTaskResponse{
-				ID:            t.ID,
-				RunID:         t.RunID,
-				RunNodeID:     t.RunNodeID,
-				AgentID:       t.AgentID,
-				TaskType:      t.TaskType,
-				InputJSON:     json.RawMessage(t.InputJSON),
-				Status:        t.Status,
-				CreatedAt:     t.CreatedAt,
-				UpdatedAt:     t.UpdatedAt,
+				ID:        t.ID,
+				RunID:     t.RunID,
+				RunNodeID: t.RunNodeID,
+				AgentID:   t.AgentID,
+				TaskType:  t.TaskType,
+				InputJSON: json.RawMessage(t.InputJSON),
+				Status:    t.Status,
+				CreatedAt: t.CreatedAt,
+				UpdatedAt: t.UpdatedAt,
 			})
 		}
 	}
@@ -367,20 +379,258 @@ func (s *OpenClawIntegrationService) ClaimTask(ctx context.Context, integrationI
 	}
 
 	return dto.AgentTaskResponse{
-		ID:            task.ID,
-		RunID:         task.RunID,
-		RunNodeID:     task.RunNodeID,
-		AgentID:       task.AgentID,
-		TaskType:      task.TaskType,
-		InputJSON:     json.RawMessage(task.InputJSON),
-		Status:        task.Status,
-		StartedAt:     task.StartedAt,
-		CreatedAt:     task.CreatedAt,
-		UpdatedAt:     task.UpdatedAt,
+		ID:        task.ID,
+		RunID:     task.RunID,
+		RunNodeID: task.RunNodeID,
+		AgentID:   task.AgentID,
+		TaskType:  task.TaskType,
+		InputJSON: json.RawMessage(task.InputJSON),
+		Status:    task.Status,
+		StartedAt: task.StartedAt,
+		CreatedAt: task.CreatedAt,
+		UpdatedAt: task.UpdatedAt,
 	}, nil
 }
 
 // --- Helpers ---
+
+func (s *OpenClawIntegrationService) registerWithExistingIntegration(ctx context.Context, existing *model.OpenClawIntegration, req dto.BridgeRegisterRequest) (dto.BridgeRegisterResponse, error) {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		person, err := s.resolveOrCreateOwner(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+
+		agent, err := s.resolveOrCreateAgent(ctx, tx, req, person)
+		if err != nil {
+			return err
+		}
+
+		updates := map[string]any{
+			"bridge_version":       strings.TrimSpace(req.BridgeVersion),
+			"openclaw_version":     strings.TrimSpace(req.OpenClawVersion),
+			"callback_url":         strings.TrimRight(strings.TrimSpace(req.CallbackURL), "/"),
+			"bound_agent_id":       agent.ID,
+			"status":               domain.IntegrationStatusActive,
+			"last_error_message":   "",
+			"instance_fingerprint": strings.TrimSpace(req.InstanceFingerprint),
+		}
+		if displayName := strings.TrimSpace(req.DisplayName); displayName != "" {
+			updates["display_name"] = displayName
+		}
+		if len(req.Capabilities) > 0 {
+			updates["capabilities_json"] = datatypes.JSON(req.Capabilities)
+		}
+		if err := tx.Model(&model.OpenClawIntegration{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.First(existing, existing.ID).Error
+	})
+	if err != nil {
+		return dto.BridgeRegisterResponse{}, err
+	}
+
+	return dto.BridgeRegisterResponse{
+		IntegrationID:             existing.ID,
+		Status:                    existing.Status,
+		CallbackSecret:            existing.CallbackSecret,
+		HeartbeatIntervalSeconds:  existing.HeartbeatInterval,
+		MinSupportedBridgeVersion: "0.1.0",
+	}, nil
+}
+
+func (s *OpenClawIntegrationService) resolveOrCreateOwner(ctx context.Context, tx *gorm.DB, req dto.BridgeRegisterRequest) (*model.Person, error) {
+	source := "openclaw"
+	externalID := strings.TrimSpace(req.OwnerExternalID)
+	email := strings.TrimSpace(req.OwnerEmail)
+	name := strings.TrimSpace(req.OwnerName)
+	roleType := strings.TrimSpace(req.OwnerRoleType)
+	if roleType == "" {
+		roleType = "operation"
+	}
+	if externalID == "" && email == "" && name == "" {
+		return nil, nil
+	}
+
+	var person model.Person
+	if externalID != "" {
+		err := tx.WithContext(ctx).
+			Where("external_source = ? AND external_user_id = ?", source, externalID).
+			First(&person).Error
+		if err == nil {
+			updates := map[string]any{}
+			if name != "" && person.Name == "" {
+				updates["name"] = name
+			}
+			if email != "" && person.Email == "" {
+				updates["email"] = email
+			}
+			if person.RoleType == "" {
+				updates["role_type"] = roleType
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(&model.Person{}).Where("id = ?", person.ID).Updates(updates).Error; err != nil {
+					return nil, err
+				}
+				if err := tx.First(&person, person.ID).Error; err != nil {
+					return nil, err
+				}
+			}
+			return &person, nil
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+
+	if email != "" {
+		if _, err := mail.ParseAddress(email); err != nil {
+			return nil, response.Validation("拥有者邮箱格式不合法")
+		}
+		err := tx.WithContext(ctx).Where("email = ?", email).First(&person).Error
+		if err == nil {
+			updates := map[string]any{}
+			if externalID != "" && person.ExternalUserID == nil {
+				updates["external_source"] = stringPtr(source)
+				updates["external_user_id"] = stringPtr(externalID)
+			}
+			if name != "" && person.Name == "" {
+				updates["name"] = name
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(&model.Person{}).Where("id = ?", person.ID).Updates(updates).Error; err != nil {
+					return nil, err
+				}
+				if err := tx.First(&person, person.ID).Error; err != nil {
+					return nil, err
+				}
+			}
+			return &person, nil
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+
+	if name == "" || email == "" {
+		return nil, response.Validation("首次接入时必须提供拥有者姓名和邮箱")
+	}
+
+	person = model.Person{
+		Name:     name,
+		Email:    email,
+		RoleType: roleType,
+		Status:   domain.StatusEnabled,
+	}
+	if externalID != "" {
+		person.ExternalSource = stringPtr(source)
+		person.ExternalUserID = stringPtr(externalID)
+	}
+	if err := tx.WithContext(ctx).Create(&person).Error; err != nil {
+		return nil, err
+	}
+	return &person, nil
+}
+
+func (s *OpenClawIntegrationService) resolveOrCreateAgent(ctx context.Context, tx *gorm.DB, req dto.BridgeRegisterRequest, person *model.Person) (*model.Agent, error) {
+	agentCode := strings.TrimSpace(req.AgentCode)
+	if agentCode == "" {
+		agentCode = strings.TrimSpace(req.BoundAgentID)
+	}
+	agentName := strings.TrimSpace(req.AgentName)
+	if agentName == "" {
+		agentName = strings.TrimSpace(req.DisplayName)
+	}
+	if agentName == "" {
+		agentName = "OpenClaw Agent"
+	}
+	if agentCode == "" {
+		return nil, response.Validation("必须提供 agent_code 或 bound_agent_id")
+	}
+
+	var agent model.Agent
+	err := tx.WithContext(ctx).Where("code = ?", agentCode).First(&agent).Error
+	if err == nil {
+		updates := map[string]any{}
+		if person != nil && agent.OwnerPersonID == 0 {
+			updates["owner_person_id"] = person.ID
+		} else if person != nil && agent.OwnerPersonID != person.ID {
+			return nil, response.Conflict("龙虾编码已被其他人员占用")
+		}
+		if agentName != "" && agent.Name != agentName {
+			updates["name"] = agentName
+		}
+		if strings.TrimSpace(req.BridgeVersion) != "" && agent.Version != strings.TrimSpace(req.BridgeVersion) {
+			updates["version"] = strings.TrimSpace(req.BridgeVersion)
+		}
+		updates["provider"] = "openclaw"
+		updates["status"] = domain.StatusEnabled
+		configJSON, err := mergeAgentConfig(agent.ConfigJSON, req)
+		if err != nil {
+			return nil, response.Validation("龙虾配置写入失败")
+		}
+		updates["config_json"] = configJSON
+		if err := tx.Model(&model.Agent{}).Where("id = ?", agent.ID).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		if err := tx.First(&agent, agent.ID).Error; err != nil {
+			return nil, err
+		}
+		return &agent, nil
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	if person == nil {
+		return nil, response.Validation("首次接入新龙虾时必须提供拥有者信息")
+	}
+
+	configJSON, err := mergeAgentConfig(nil, req)
+	if err != nil {
+		return nil, response.Validation("龙虾配置写入失败")
+	}
+	agent = model.Agent{
+		Name:          agentName,
+		Code:          agentCode,
+		Provider:      "openclaw",
+		Version:       strings.TrimSpace(req.BridgeVersion),
+		OwnerPersonID: person.ID,
+		ConfigJSON:    configJSON,
+		Status:        domain.StatusEnabled,
+	}
+	if err := tx.WithContext(ctx).Create(&agent).Error; err != nil {
+		return nil, err
+	}
+	return &agent, nil
+}
+
+func mergeAgentConfig(existing datatypes.JSON, req dto.BridgeRegisterRequest) (datatypes.JSON, error) {
+	payload := map[string]any{}
+	if len(existing) > 0 && string(existing) != "null" {
+		if err := json.Unmarshal(existing, &payload); err != nil {
+			return nil, err
+		}
+	}
+	payload["instance_fingerprint"] = strings.TrimSpace(req.InstanceFingerprint)
+	payload["callback_url"] = strings.TrimRight(strings.TrimSpace(req.CallbackURL), "/")
+	payload["bridge_version"] = strings.TrimSpace(req.BridgeVersion)
+	payload["openclaw_version"] = strings.TrimSpace(req.OpenClawVersion)
+	payload["registration_source"] = "openclaw_register"
+	if strings.TrimSpace(req.OwnerExternalID) != "" {
+		payload["owner_external_id"] = strings.TrimSpace(req.OwnerExternalID)
+	}
+	if len(req.Capabilities) > 0 {
+		var capabilities any
+		if err := json.Unmarshal(req.Capabilities, &capabilities); err == nil {
+			payload["capabilities"] = capabilities
+		}
+	}
+	bytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(bytes), nil
+}
 
 func generateRegCode() string {
 	b := make([]byte, 4)
@@ -421,4 +671,8 @@ func toIntegrationResponse(i model.OpenClawIntegration) dto.IntegrationResponse 
 		CreatedAt:           i.CreatedAt,
 		UpdatedAt:           i.UpdatedAt,
 	}
+}
+
+func stringPtr(value string) *string {
+	return &value
 }

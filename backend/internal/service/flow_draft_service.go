@@ -449,7 +449,6 @@ func validateDraftPlan(plan *dto.DraftPlan) error {
 		return nodes[i].SortOrder < nodes[j].SortOrder
 	})
 
-	hasHumanReview := false
 	seenCodes := map[string]struct{}{}
 	validTaskTypes := map[string]bool{
 		domain.AgentTaskTypeQuery:          true,
@@ -472,9 +471,6 @@ func validateDraftPlan(plan *dto.DraftPlan) error {
 		}
 		if !isSupportedDraftNodeType(node.NodeType) {
 			return response.Validation(fmt.Sprintf("节点 %s 的类型不支持", node.NodeCode))
-		}
-		if node.NodeType == domain.NodeTypeHumanReview || node.NodeType == domain.NodeTypeHumanAcceptance {
-			hasHumanReview = true
 		}
 
 		switch strings.TrimSpace(node.ExecutorType) {
@@ -502,13 +498,6 @@ func validateDraftPlan(plan *dto.DraftPlan) error {
 		if strings.TrimSpace(node.ResultOwnerRule) == "specified_person" && (node.ResultOwnerPersonID == nil || *node.ResultOwnerPersonID == 0) {
 			return response.Validation(fmt.Sprintf("节点 %s 缺少 result_owner_person_id", node.NodeCode))
 		}
-	}
-	if !hasHumanReview {
-		return response.Validation("必须至少包含一个人工确认节点")
-	}
-	lastNode := nodes[len(nodes)-1]
-	if lastNode.NodeType != domain.NodeTypeHumanAcceptance {
-		return response.Validation("最后一个节点必须是最终签收节点")
 	}
 	return nil
 }

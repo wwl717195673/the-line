@@ -465,3 +465,71 @@ export type ReviewDeliverableInput = {
   review_status: "approved" | "rejected";
   review_comment: string;
 };
+
+export type RegistrationCode = {
+  id: number;
+  code: string;
+  status: string;
+  expires_at: string;
+  created_at: string;
+};
+
+export type RegistrationCodeQuery = {
+  page: number;
+  page_size: number;
+  status?: string;
+};
+
+export type CreateRegistrationCodeInput = {
+  expires_in_minutes: number;
+};
+
+export type OpenClawIntegration = {
+  id: number;
+  display_name: string;
+  status: string;
+  bridge_version: string;
+  openclaw_version: string;
+  instance_fingerprint: string;
+  bound_agent_id: number;
+  capabilities_json: unknown;
+  callback_url: string;
+  heartbeat_interval: number;
+  last_heartbeat_at?: string;
+  last_error_message: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OpenClawIntegrationQuery = {
+  page: number;
+  page_size: number;
+  status?: string;
+};
+
+export type RegisterOpenClawInput = {
+  protocol_version: number;
+  registration_code: string;
+  bridge_version: string;
+  openclaw_version?: string;
+  instance_fingerprint: string;
+  display_name?: string;
+  bound_agent_id?: string;
+  agent_name?: string;
+  agent_code?: string;
+  owner_name?: string;
+  owner_email?: string;
+  owner_role_type?: string;
+  owner_external_id?: string;
+  callback_url: string;
+  capabilities?: unknown;
+  idempotency_key?: string;
+};
+
+export type RegisterOpenClawResult = {
+  integration_id: number;
+  status: string;
+  callback_secret: string;
+  heartbeat_interval_seconds: number;
+  min_supported_bridge_version: string;
+};

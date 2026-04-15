@@ -12,6 +12,7 @@ import DashboardPage from "./pages/DashboardPage";
 import DraftCreatePage from "./pages/DraftCreatePage";
 import DraftConfirmPage from "./pages/DraftConfirmPage";
 import DraftListPage from "./pages/DraftListPage";
+import OpenClawSetupPage from "./pages/OpenClawSetupPage";
 
 function App() {
   return (
@@ -42,6 +43,7 @@ function App() {
                 <NavLink to="/drafts">流程草案</NavLink>
                 <NavLink to="/templates">模板</NavLink>
                 <NavLink to="/runs">流程</NavLink>
+                <NavLink to="/integrations/openclaw/setup">接入龙虾</NavLink>
               </nav>
             </div>
           </aside>
@@ -62,6 +64,7 @@ function App() {
               <Route path="/deliverables/:deliverableId" element={<DeliverableDetailPage />} />
               <Route path="/resources/persons" element={<PersonListPage />} />
               <Route path="/resources/agents" element={<AgentListPage />} />
+              <Route path="/integrations/openclaw/setup" element={<OpenClawSetupPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </main>

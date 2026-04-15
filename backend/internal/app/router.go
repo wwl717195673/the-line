@@ -41,7 +41,7 @@ func NewRouter(cfg config.Config, database *gorm.DB) *gin.Engine {
 	agentTaskReceiptService := service.NewAgentTaskReceiptService(agentTaskReceiptRepo)
 	runNodeService := service.NewRunNodeService(database, runService, runRepo, runNodeRepo, nodeLogRepo, personRepo, agentRepo, commentRepo, attachmentRepo)
 	runOrchestrationService := service.NewRunOrchestrationService(runNodeRepo, agentTaskService)
-	integrationService := service.NewOpenClawIntegrationService(integrationRepo, regCodeRepo, agentRepo, agentTaskRepo)
+	integrationService := service.NewOpenClawIntegrationService(database, integrationRepo, regCodeRepo, agentRepo, agentTaskRepo)
 
 	var plannerExec executor.AgentPlannerExecutor
 	var agentExec executor.AgentExecutor
