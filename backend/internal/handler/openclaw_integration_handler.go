@@ -119,6 +119,38 @@ func (h *OpenClawIntegrationHandler) Disable(c *gin.Context) {
 	response.OK(c, result)
 }
 
+func (h *OpenClawIntegrationHandler) PendingTasks(c *gin.Context) {
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	tasks, err := h.integrationService.PendingTasks(c.Request.Context(), id)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, tasks)
+}
+
+func (h *OpenClawIntegrationHandler) ClaimTask(c *gin.Context) {
+	id, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
+	taskID, ok := parseIDParam(c, "taskId")
+	if !ok {
+		return
+	}
+
+	task, err := h.integrationService.ClaimTask(c.Request.Context(), id, taskID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, task)
+}
+
 func (h *OpenClawIntegrationHandler) TestPing(c *gin.Context) {
 	id, ok := parseIDParam(c, "id")
 	if !ok {

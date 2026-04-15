@@ -25,6 +25,7 @@ type OpenClawIntegrationService struct {
 	integrationRepo *repository.OpenClawIntegrationRepository
 	regCodeRepo     *repository.RegistrationCodeRepository
 	agentRepo       *repository.AgentRepository
+	agentTaskRepo   *repository.AgentTaskRepository
 	httpClient      *http.Client
 }
 
@@ -32,11 +33,13 @@ func NewOpenClawIntegrationService(
 	integrationRepo *repository.OpenClawIntegrationRepository,
 	regCodeRepo *repository.RegistrationCodeRepository,
 	agentRepo *repository.AgentRepository,
+	agentTaskRepo *repository.AgentTaskRepository,
 ) *OpenClawIntegrationService {
 	return &OpenClawIntegrationService{
 		integrationRepo: integrationRepo,
 		regCodeRepo:     regCodeRepo,
 		agentRepo:       agentRepo,
+		agentTaskRepo:   agentTaskRepo,
 		httpClient:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -285,6 +288,96 @@ func (s *OpenClawIntegrationService) TestPing(ctx context.Context, id uint64) (m
 	}
 
 	return map[string]any{"success": true}, nil
+}
+
+// --- Pull Mode (pending tasks) ---
+
+func (s *OpenClawIntegrationService) PendingTasks(ctx context.Context, integrationID uint64) ([]dto.AgentTaskResponse, error) {
+	integration, err := s.integrationRepo.GetByID(ctx, integrationID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, response.NotFound("集成实例不存在")
+		}
+		return nil, err
+	}
+	if integration.Status != domain.IntegrationStatusActive {
+		return nil, response.InvalidState("集成实例未激活")
+	}
+
+	tasks, _, err := s.agentTaskRepo.List(ctx, repository.AgentTaskListFilter{
+		Status: domain.AgentTaskStatusQueued,
+		Limit:  20,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter tasks bound to this integration's agent
+	result := make([]dto.AgentTaskResponse, 0)
+	for _, t := range tasks {
+		if t.AgentID == integration.BoundAgentID {
+			result = append(result, dto.AgentTaskResponse{
+				ID:            t.ID,
+				RunID:         t.RunID,
+				RunNodeID:     t.RunNodeID,
+				AgentID:       t.AgentID,
+				TaskType:      t.TaskType,
+				InputJSON:     json.RawMessage(t.InputJSON),
+				Status:        t.Status,
+				CreatedAt:     t.CreatedAt,
+				UpdatedAt:     t.UpdatedAt,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (s *OpenClawIntegrationService) ClaimTask(ctx context.Context, integrationID uint64, taskID uint64) (dto.AgentTaskResponse, error) {
+	integration, err := s.integrationRepo.GetByID(ctx, integrationID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return dto.AgentTaskResponse{}, response.NotFound("集成实例不存在")
+		}
+		return dto.AgentTaskResponse{}, err
+	}
+	if integration.Status != domain.IntegrationStatusActive {
+		return dto.AgentTaskResponse{}, response.InvalidState("集成实例未激活")
+	}
+
+	task, err := s.agentTaskRepo.GetByID(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return dto.AgentTaskResponse{}, response.NotFound("任务不存在")
+		}
+		return dto.AgentTaskResponse{}, err
+	}
+	if task.AgentID != integration.BoundAgentID {
+		return dto.AgentTaskResponse{}, response.Forbidden("该任务不属于当前集成实例绑定的龙虾")
+	}
+	if task.Status != domain.AgentTaskStatusQueued {
+		return dto.AgentTaskResponse{}, response.InvalidState("任务状态不是待执行")
+	}
+
+	now := time.Now()
+	task.Status = domain.AgentTaskStatusRunning
+	task.StartedAt = &now
+	task.ExternalRuntime = "openclaw"
+	if err := s.agentTaskRepo.Update(ctx, task); err != nil {
+		return dto.AgentTaskResponse{}, err
+	}
+
+	return dto.AgentTaskResponse{
+		ID:            task.ID,
+		RunID:         task.RunID,
+		RunNodeID:     task.RunNodeID,
+		AgentID:       task.AgentID,
+		TaskType:      task.TaskType,
+		InputJSON:     json.RawMessage(task.InputJSON),
+		Status:        task.Status,
+		StartedAt:     task.StartedAt,
+		CreatedAt:     task.CreatedAt,
+		UpdatedAt:     task.UpdatedAt,
+	}, nil
 }
 
 // --- Helpers ---
